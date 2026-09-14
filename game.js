@@ -5,8 +5,10 @@
   const ctx = canvas.getContext("2d");
 
   const startScreen = document.getElementById("startScreen");
+  const instructionsScreen = document.getElementById("instructionsScreen");
   const endScreen = document.getElementById("endScreen");
   const startBtn = document.getElementById("startBtn");
+  const playBtn = document.getElementById("playBtn");
   const retryBtn = document.getElementById("retryBtn");
   const endTitle = document.getElementById("endTitle");
   const endSubtitle = document.getElementById("endSubtitle");
@@ -89,6 +91,7 @@
   const LANE_CHANGE_TIME = 0.16; // seconds to glide between lanes
 
   const BEST_KEY = "hameysHighwayBest";
+  const SEEN_INSTRUCTIONS_KEY = "hameysHighwaySeenInstructions";
 
   // ---------- State ----------
   let dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -722,7 +725,22 @@
     resetGame();
     state = "playing";
     startScreen.classList.add("hidden");
+    instructionsScreen.classList.add("hidden");
     endScreen.classList.add("hidden");
+  }
+
+  function handleStartClick() {
+    if (localStorage.getItem(SEEN_INSTRUCTIONS_KEY)) {
+      startGame();
+    } else {
+      startScreen.classList.add("hidden");
+      instructionsScreen.classList.remove("hidden");
+    }
+  }
+
+  function handlePlayClick() {
+    localStorage.setItem(SEEN_INSTRUCTIONS_KEY, "1");
+    startGame();
   }
 
   function endGame() {
@@ -743,7 +761,8 @@
   }
 
   // ---------- Input ----------
-  startBtn.addEventListener("click", startGame);
+  startBtn.addEventListener("click", handleStartClick);
+  playBtn.addEventListener("click", handlePlayClick);
   retryBtn.addEventListener("click", startGame);
 
   leftBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); changeLane(-1); });
