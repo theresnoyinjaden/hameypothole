@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>Highway Patch-Up</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="game">
+    <canvas id="canvas"></canvas>
+
+    <div id="hud">
+      <div class="hud-stat">
+        <span class="hud-label">Time</span>
+        <span id="timeLeft" class="hud-value">60</span>
+      </div>
+      <div class="hud-stat">
+        <span class="hud-label">Fixed</span>
+        <span id="fixedCount" class="hud-value">0/12</span>
+      </div>
+      <div class="hud-stat">
+        <span class="hud-label">Score</span>
+        <span id="score" class="hud-value">0</span>
+      </div>
+      <div class="hud-stat danger">
+        <span class="hud-label">Wipeouts</span>
+        <span id="casualties" class="hud-value">0</span>
+      </div>
+    </div>
+
+    <div id="startScreen" class="overlay">
+      <h1>Highway Patch-Up</h1>
+      <p>Tap the potholes to repair them before the clock runs out.</p>
+      <p class="warn">Leave one open and a cat biker &mdash; or a car &mdash; might hit it and wipe out!</p>
+      <button id="startBtn">Start Shift</button>
+    </div>
+
+    <div id="endScreen" class="overlay hidden">
+      <h1 id="endTitle">Shift Complete</h1>
+      <p id="endSubtitle"></p>
+      <div class="end-stats">
+        <div><span>Potholes fixed</span><b id="endFixed">0</b></div>
+        <div><span>Wipeouts caused</span><b id="endCasualties">0</b></div>
+        <div><span>Final score</span><b id="endScore">0</b></div>
+      </div>
+      <button id="retryBtn">Play Again</button>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
