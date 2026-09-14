@@ -31,14 +31,58 @@
   const SPEED_RAMP = 0.03;     // speed added per meter travelled
 
   const LIVES_START = 3;
-  const STOP_TIMER = 4.5;      // seconds before tailgater rear-ends you
-  const FILL_TIME = 1.0;       // seconds of holding to reach 100%
+  const MAX_LIVES = 5;
   const GAUGE_CAP = 1.3;       // auto-release past this fraction
   const GREEN_START = 0.6;
   const GREEN_END = 0.85;
 
+  // Pothole variety: each kind has its own size, fill speed, patience
+  // window and payout. Gravel is quick & cheap, craters are slow & rich,
+  // boss sinkholes take several successful hits to fully clear.
+  const POTHOLE_KINDS = {
+    gravel: {
+      radius: 16,
+      fillTime: 0.55,
+      stopTimer: 3.2,
+      points: { perfect: 40, bumpy: 15, overfill: 5 },
+      ring: "rgba(210, 180, 120, 0.7)",
+      weight: 0.35,
+    },
+    standard: {
+      radius: 24,
+      fillTime: 1.0,
+      stopTimer: 4.5,
+      points: { perfect: 100, bumpy: 30, overfill: 10 },
+      ring: "rgba(255, 212, 59, 0.55)",
+      weight: 0.5,
+    },
+    crater: {
+      radius: 34,
+      fillTime: 1.8,
+      stopTimer: 6.0,
+      points: { perfect: 220, bumpy: 80, overfill: 20 },
+      ring: "rgba(255, 107, 107, 0.7)",
+      weight: 0.15,
+    },
+    boss: {
+      radius: 46,
+      fillTime: 1.1,
+      stopTimer: 5.2,
+      points: { perfect: 60, bumpy: 20, overfill: 5 },
+      finalBonus: 250,
+      requiresHits: 3,
+      ring: "rgba(230, 73, 228, 0.85)",
+    },
+  };
+
   const POTHOLE_SPAWN_INTERVAL = [0.9, 1.7];
   const AMBIENT_SPAWN_INTERVAL = [1.4, 2.6];
+  const COMBO_SPAWN_INTERVAL = [11, 19];   // gap between 3-in-a-row clusters
+  const COMBO_GAP = 150;                    // px between potholes in a cluster
+  const BOSS_SPAWN_INTERVAL = [40, 65];     // gap between boss sinkholes
+  const FIRST_BOSS_DELAY = 24;
+  const COMBO_BONUS_STEP = 60;              // bonus per 3-perfect streak
+
   const RESOLVE_PAUSE = 0.35;  // brief pause after a successful fill
   const CRASH_PAUSE = 0.9;     // brief pause after a tailgater hit
 
@@ -65,6 +109,10 @@
   let ambientVehicles = [];
   let potholeSpawnTimer = 0;
   let ambientSpawnTimer = 0;
+  let comboSpawnTimer = 0;
+  let bossSpawnTimer = 0;
+  let bossActive = false;
+  let comboStreak = 0;
 
   let player = null;
   let tailgater = null;
@@ -132,6 +180,8 @@
       laneT: 1,
       status: "riding", // riding | stopped | resolving | crashed
       timer: 0,
+      currentStopTimer: 4.5,
+      currentFillTime: 1.0,
       holding: false,
       holdProgress: 0,
       engagedPothole: null,
@@ -152,16 +202,47 @@
   }
 
   // ---------- Entities ----------
-  function spawnPothole() {
-    const lane = randInt(0, LANE_COUNT - 1);
-    potholes.push({
+  function pickWeightedKind() {
+    const entries = [["gravel", POTHOLE_KINDS.gravel.weight], ["standard", POTHOLE_KINDS.standard.weight], ["crater", POTHOLE_KINDS.crater.weight]];
+    const total = entries.reduce((s, e) => s + e[1], 0);
+    let r = Math.random() * total;
+    for (const [kind, w] of entries) {
+      if (r < w) return kind;
+      r -= w;
+    }
+    return "standard";
+  }
+
+  function makePothole(kind, lane, y) {
+    const cfg = POTHOLE_KINDS[kind];
+    return {
+      kind,
       lane,
       x: laneXs[lane],
-      y: road.top - 40,
-      radius: 24,
+      y,
+      radius: cfg.radius,
       state: "active", // active | engaged | fixed
       wobble: Math.random() * Math.PI * 2,
-    });
+      hitsDone: 0,
+    };
+  }
+
+  function spawnPothole(kind) {
+    const lane = randInt(0, LANE_COUNT - 1);
+    potholes.push(makePothole(kind || pickWeightedKind(), lane, road.top - 40));
+  }
+
+  function spawnCombo() {
+    const lane = randInt(0, LANE_COUNT - 1);
+    for (let i = 0; i < 3; i++) {
+      potholes.push(makePothole("gravel", lane, road.top - 40 - i * COMBO_GAP));
+    }
+  }
+
+  function spawnBoss() {
+    const lane = randInt(0, LANE_COUNT - 1);
+    potholes.push(makePothole("boss", lane, road.top - 60));
+    bossActive = true;
   }
 
   function spawnAmbient() {
@@ -190,8 +271,11 @@
 
   // ---------- Repair flow ----------
   function beginRepair(pothole) {
+    const cfg = POTHOLE_KINDS[pothole.kind];
     player.status = "stopped";
-    player.timer = STOP_TIMER;
+    player.currentFillTime = cfg.fillTime;
+    player.currentStopTimer = cfg.stopTimer;
+    player.timer = cfg.stopTimer;
     player.holding = false;
     player.holdProgress = 0;
     player.engagedPothole = pothole;
@@ -202,39 +286,86 @@
 
   function resolveRepair(outcome) {
     const p = player.engagedPothole;
+    const cfg = p ? POTHOLE_KINDS[p.kind] : POTHOLE_KINDS.standard;
+
+    // Boss sinkholes need several successful hits before they're cleared.
+    if (p && p.kind === "boss") {
+      score += cfg.points[outcome];
+      p.hitsDone++;
+      if (p.hitsDone < cfg.requiresHits) {
+        showFeedback(`HIT ${p.hitsDone}/${cfg.requiresHits}!`, outcome);
+        player.holdProgress = 0;
+        player.holding = false;
+        player.timer = cfg.stopTimer; // fresh window for the next hit
+        spawnTailgater();
+        comboStreak = outcome === "perfect" ? comboStreak : 0;
+        updateRepairBtn();
+        updateHud();
+        return; // stays "stopped", still engaged
+      }
+      score += cfg.finalBonus;
+      bossActive = false;
+      lives = Math.min(MAX_LIVES, lives + 1);
+      showFeedback("BOSS CLEARED! +1 LIFE", "boss");
+      p.state = "fixed";
+      potholesFixed++;
+      if (outcome === "perfect") perfectFills++;
+      finishRepairPause();
+      updateHud();
+      return;
+    }
+
     if (p) p.state = "fixed";
     potholesFixed++;
 
     let label = "";
     if (outcome === "perfect") {
-      score += 100;
+      score += cfg.points.perfect;
       perfectFills++;
+      comboStreak++;
       label = "PERFECT!";
       if (navigator.vibrate) navigator.vibrate(30);
+      if (comboStreak > 0 && comboStreak % 3 === 0) {
+        const bonus = COMBO_BONUS_STEP * (comboStreak / 3);
+        score += bonus;
+        showFeedback(`COMBO x${comboStreak}! +${bonus}`, "combo");
+        finishRepairPause();
+        updateHud();
+        return;
+      }
     } else if (outcome === "bumpy") {
-      score += 30;
+      score += cfg.points.bumpy;
+      comboStreak = 0;
       label = "Bumpy fill";
     } else {
-      score += 10;
+      score += cfg.points.overfill;
+      comboStreak = 0;
       label = "Overfilled...";
     }
     showFeedback(label, outcome);
+    finishRepairPause();
+    updateHud();
+  }
 
+  function finishRepairPause() {
     player.status = "resolving";
     player.pauseTimer = RESOLVE_PAUSE;
     player.engagedPothole = null;
     player.holding = false;
     tailgater = null;
     updateRepairBtn();
-    updateHud();
   }
 
   function failRepair() {
     lives--;
+    comboStreak = 0;
     player.status = "crashed";
     player.pauseTimer = CRASH_PAUSE;
     player.shake = 1;
-    if (player.engagedPothole) player.engagedPothole.state = "fixed"; // hole gets paved over by the pile-up, but unrepaired
+    if (player.engagedPothole) {
+      player.engagedPothole.state = "fixed"; // hole gets paved over by the pile-up, but unrepaired
+      if (player.engagedPothole.kind === "boss") bossActive = false;
+    }
     player.engagedPothole = null;
     player.holding = false;
     tailgater = null;
@@ -291,6 +422,16 @@
         spawnAmbient();
         ambientSpawnTimer = rand(AMBIENT_SPAWN_INTERVAL[0], AMBIENT_SPAWN_INTERVAL[1]);
       }
+      comboSpawnTimer -= dt;
+      if (comboSpawnTimer <= 0) {
+        spawnCombo();
+        comboSpawnTimer = rand(COMBO_SPAWN_INTERVAL[0], COMBO_SPAWN_INTERVAL[1]);
+      }
+      bossSpawnTimer -= dt;
+      if (bossSpawnTimer <= 0 && !bossActive) {
+        spawnBoss();
+        bossSpawnTimer = rand(BOSS_SPAWN_INTERVAL[0], BOSS_SPAWN_INTERVAL[1]);
+      }
 
       // move potholes
       for (const p of potholes) {
@@ -305,7 +446,7 @@
           for (const p of potholes) {
             if (p.state !== "active") continue;
             if (p.lane !== v.lane) continue;
-            if (Math.abs(v.y - p.y) < 18) {
+            if (Math.abs(v.y - p.y) < p.radius * 0.75) {
               v.state = "crashing";
               v.crashT = 0;
               break;
@@ -335,7 +476,7 @@
       player.bob += dt;
 
       if (player.holding) {
-        player.holdProgress += dt / FILL_TIME;
+        player.holdProgress += dt / player.currentFillTime;
         if (player.holdProgress >= GAUGE_CAP) {
           player.holdProgress = GAUGE_CAP;
           player.holding = false;
@@ -344,7 +485,7 @@
       }
 
       if (tailgater) {
-        const t = clamp(1 - player.timer / STOP_TIMER, 0, 1);
+        const t = clamp(1 - player.timer / player.currentStopTimer, 0, 1);
         tailgater.y = lerp(tailgater.startY, player.y + 6, t);
       }
 
@@ -410,6 +551,7 @@
 
   function drawPothole(p) {
     const bob = Math.sin(p.wobble * 2) * 1.5;
+    const cfg = POTHOLE_KINDS[p.kind] || POTHOLE_KINDS.standard;
     if (p.state === "fixed") {
       ctx.save();
       ctx.globalAlpha = 0.35;
@@ -431,9 +573,35 @@
     ctx.fill();
     ctx.beginPath();
     ctx.ellipse(p.x, p.y + bob, p.radius * 1.05, p.radius * 0.78, 0, 0, Math.PI * 2);
-    ctx.strokeStyle = p.state === "engaged" ? "rgba(255,255,255,0.6)" : "rgba(255, 212, 59, 0.55)";
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = p.state === "engaged" ? "rgba(255,255,255,0.7)" : cfg.ring;
+    ctx.lineWidth = p.kind === "crater" || p.kind === "boss" ? 3.5 : 2;
     ctx.stroke();
+
+    if (p.kind === "boss") {
+      ctx.save();
+      ctx.globalAlpha = 0.75 + Math.sin(p.wobble * 4) * 0.2;
+      ctx.strokeStyle = cfg.ring;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y + bob, p.radius * 1.25, p.radius * 0.95, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#ff8ffb";
+      ctx.fillText("BOSS", p.x, p.y + bob - p.radius - 12);
+
+      const pips = cfg.requiresHits;
+      const done = p.hitsDone || 0;
+      for (let i = 0; i < pips; i++) {
+        const px = p.x - ((pips - 1) * 9) / 2 + i * 9;
+        ctx.beginPath();
+        ctx.arc(px, p.y + bob + p.radius + 12, 3, 0, Math.PI * 2);
+        ctx.fillStyle = i < done ? "#ff8ffb" : "rgba(255,255,255,0.3)";
+        ctx.fill();
+      }
+    }
     ctx.restore();
   }
 
@@ -468,7 +636,7 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("🚙", 0, 0);
-    const urgency = clamp(1 - player.timer / STOP_TIMER, 0, 1);
+    const urgency = clamp(1 - player.timer / player.currentStopTimer, 0, 1);
     if (urgency > 0.5) {
       ctx.globalAlpha = urgency;
       ctx.font = "16px sans-serif";
@@ -518,7 +686,7 @@
       ctx.stroke();
 
       // countdown ring (timer left)
-      const timerFrac = clamp(player.timer / STOP_TIMER, 0, 1);
+      const timerFrac = clamp(player.timer / player.currentStopTimer, 0, 1);
       ctx.strokeStyle = "rgba(255,255,255,0.55)";
       ctx.lineWidth = 3;
       ctx.beginPath();
@@ -541,6 +709,10 @@
     tailgater = null;
     potholeSpawnTimer = 0.6;
     ambientSpawnTimer = 1;
+    comboSpawnTimer = rand(COMBO_SPAWN_INTERVAL[0], COMBO_SPAWN_INTERVAL[1]);
+    bossSpawnTimer = FIRST_BOSS_DELAY;
+    bossActive = false;
+    comboStreak = 0;
     player = makePlayer();
     updateHud();
     updateRepairBtn();

@@ -95,6 +95,8 @@ canvas {
 #feedback.bumpy { color: #ffd43b; }
 #feedback.overfill { color: #ff922b; }
 #feedback.crash { color: #ff6b6b; }
+#feedback.combo { color: #74c0fc; }
+#feedback.boss { color: #ff8ffb; }
 
 /* ---------- Controls ---------- */
 
