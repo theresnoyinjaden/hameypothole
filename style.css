@@ -29,20 +29,23 @@ canvas {
   background: #2f9e44;
 }
 
+/* ---------- HUD ---------- */
+
 #hud {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   display: flex;
-  justify-content: space-around;
-  padding: 10px 8px calc(8px + env(safe-area-inset-top, 0px));
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px calc(8px + env(safe-area-inset-top, 0px));
   background: linear-gradient(to bottom, rgba(0,0,0,0.75), rgba(0,0,0,0));
   pointer-events: none;
   z-index: 5;
 }
 
-.hud-stat {
+.hud-block {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -63,9 +66,105 @@ canvas {
   font-variant-numeric: tabular-nums;
 }
 
-.hud-stat.danger .hud-value {
-  color: #ff6b6b;
+.hud-lives {
+  font-size: 20px;
+  letter-spacing: 2px;
 }
+
+#feedback {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(1);
+  font-size: 34px;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 2px 6px rgba(0,0,0,0.6);
+  pointer-events: none;
+  z-index: 6;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  opacity: 1;
+}
+
+#feedback.hidden {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.7);
+}
+
+#feedback.perfect { color: #51cf66; }
+#feedback.bumpy { color: #ffd43b; }
+#feedback.overfill { color: #ff922b; }
+#feedback.crash { color: #ff6b6b; }
+
+/* ---------- Controls ---------- */
+
+#controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 18px calc(18px + env(safe-area-inset-bottom, 0px));
+  z-index: 10;
+}
+
+#controls button {
+  border: none;
+  cursor: pointer;
+  color: #fff;
+  font-weight: 800;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
+.steer-btn {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.18);
+  border: 2px solid rgba(255,255,255,0.35);
+  font-size: 24px;
+  backdrop-filter: blur(2px);
+}
+
+.steer-btn:active {
+  background: rgba(255,255,255,0.35);
+}
+
+.repair-btn {
+  flex: 1;
+  max-width: 200px;
+  height: 64px;
+  border-radius: 999px;
+  background: #495057;
+  font-size: 16px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  box-shadow: 0 5px 0 #2b2e33;
+  transition: background 0.15s ease, box-shadow 0.1s ease, transform 0.05s ease;
+}
+
+.repair-btn.ready {
+  background: #ffd43b;
+  color: #1a1a1a;
+  box-shadow: 0 5px 0 #d9a900;
+  animation: pulse 0.9s ease-in-out infinite;
+}
+
+.repair-btn.holding {
+  transform: translateY(4px);
+  box-shadow: 0 1px 0 #d9a900;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+/* ---------- Overlays ---------- */
 
 .overlay {
   position: absolute;
@@ -74,9 +173,9 @@ canvas {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
   text-align: center;
-  background: rgba(5, 10, 5, 0.88);
+  background: rgba(5, 10, 5, 0.9);
   color: #fff;
   padding: 24px;
   z-index: 20;
@@ -94,10 +193,10 @@ canvas {
 
 .overlay p {
   margin: 0;
-  max-width: 320px;
+  max-width: 330px;
   line-height: 1.4;
   opacity: 0.9;
-  font-size: 15px;
+  font-size: 14.5px;
 }
 
 .overlay p.warn {
@@ -105,7 +204,7 @@ canvas {
 }
 
 .overlay button {
-  margin-top: 18px;
+  margin-top: 16px;
   padding: 14px 34px;
   font-size: 18px;
   font-weight: 700;

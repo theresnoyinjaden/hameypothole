@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
-<title>Highway Patch-Up</title>
+<title>Hamey's Highway</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -11,40 +11,43 @@
     <canvas id="canvas"></canvas>
 
     <div id="hud">
-      <div class="hud-stat">
-        <span class="hud-label">Time</span>
-        <span id="timeLeft" class="hud-value">60</span>
-      </div>
-      <div class="hud-stat">
-        <span class="hud-label">Fixed</span>
-        <span id="fixedCount" class="hud-value">0/12</span>
-      </div>
-      <div class="hud-stat">
+      <div class="hud-block">
         <span class="hud-label">Score</span>
         <span id="score" class="hud-value">0</span>
       </div>
-      <div class="hud-stat danger">
-        <span class="hud-label">Wipeouts</span>
-        <span id="casualties" class="hud-value">0</span>
+      <div id="lives" class="hud-lives">❤️❤️❤️</div>
+      <div class="hud-block">
+        <span class="hud-label">Best</span>
+        <span id="best" class="hud-value">0</span>
       </div>
+    </div>
+
+    <div id="feedback" class="hidden"></div>
+
+    <div id="controls">
+      <button id="leftBtn" class="steer-btn" aria-label="Steer left">◀</button>
+      <button id="repairBtn" class="repair-btn" aria-label="Hold to repair">RIDE</button>
+      <button id="rightBtn" class="steer-btn" aria-label="Steer right">▶</button>
     </div>
 
     <div id="startScreen" class="overlay">
-      <h1>Highway Patch-Up</h1>
-      <p>Tap the potholes to repair them before the clock runs out.</p>
-      <p class="warn">Leave one open and a cat biker &mdash; or a car &mdash; might hit it and wipe out!</p>
-      <button id="startBtn">Start Shift</button>
+      <h1>Hamey's Highway</h1>
+      <p>Your bike rides itself &mdash; steer between 3 lanes with the side buttons (or swipe).</p>
+      <p>Ride over a pothole and you auto-brake. Press &amp; hold the middle button to pour asphalt, then let go right in the <b>green zone</b> for a perfect fill.</p>
+      <p class="warn">Stall too long and the traffic behind you will crash into you &mdash; you'll lose a life!</p>
+      <button id="startBtn">START</button>
     </div>
 
     <div id="endScreen" class="overlay hidden">
-      <h1 id="endTitle">Shift Complete</h1>
+      <h1 id="endTitle">Wiped Out</h1>
       <p id="endSubtitle"></p>
       <div class="end-stats">
+        <div><span>Distance</span><b id="endDistance">0m</b></div>
         <div><span>Potholes fixed</span><b id="endFixed">0</b></div>
-        <div><span>Wipeouts caused</span><b id="endCasualties">0</b></div>
+        <div><span>Perfect fills</span><b id="endPerfect">0</b></div>
         <div><span>Final score</span><b id="endScore">0</b></div>
       </div>
-      <button id="retryBtn">Play Again</button>
+      <button id="retryBtn">Ride Again</button>
     </div>
   </div>
 

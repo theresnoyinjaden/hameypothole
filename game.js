@@ -10,45 +10,67 @@
   const retryBtn = document.getElementById("retryBtn");
   const endTitle = document.getElementById("endTitle");
   const endSubtitle = document.getElementById("endSubtitle");
+  const endDistanceEl = document.getElementById("endDistance");
   const endFixedEl = document.getElementById("endFixed");
-  const endCasualtiesEl = document.getElementById("endCasualties");
+  const endPerfectEl = document.getElementById("endPerfect");
   const endScoreEl = document.getElementById("endScore");
 
-  const timeLeftEl = document.getElementById("timeLeft");
-  const fixedCountEl = document.getElementById("fixedCount");
   const scoreEl = document.getElementById("score");
-  const casualtiesEl = document.getElementById("casualties");
+  const bestEl = document.getElementById("best");
+  const livesEl = document.getElementById("lives");
+  const feedbackEl = document.getElementById("feedback");
+
+  const leftBtn = document.getElementById("leftBtn");
+  const rightBtn = document.getElementById("rightBtn");
+  const repairBtn = document.getElementById("repairBtn");
 
   // ---------- Config ----------
-  const LEVEL_TIME = 60; // seconds
-  const TOTAL_POTHOLES = 12;
-  const MAX_ACTIVE_POTHOLES = 5;
-  const POTHOLE_SPAWN_INTERVAL = [1.1, 2.1]; // seconds, random range
-  const POTHOLE_RADIUS = 22;
-  const REPAIR_DURATION = 0.5; // seconds to fill a pothole once tapped
+  const LANE_COUNT = 3;
+  const BASE_SPEED = 140;      // px/s world scroll at the start
+  const MAX_SPEED = 340;
+  const SPEED_RAMP = 0.03;     // speed added per meter travelled
 
-  const VEHICLE_SPAWN_INTERVAL = [0.9, 1.8];
-  const VEHICLE_HIT_RADIUS = 20;
-  const CRASH_DURATION = 0.8;
+  const LIVES_START = 3;
+  const STOP_TIMER = 4.5;      // seconds before tailgater rear-ends you
+  const FILL_TIME = 1.0;       // seconds of holding to reach 100%
+  const GAUGE_CAP = 1.3;       // auto-release past this fraction
+  const GREEN_START = 0.6;
+  const GREEN_END = 0.85;
+
+  const POTHOLE_SPAWN_INTERVAL = [0.9, 1.7];
+  const AMBIENT_SPAWN_INTERVAL = [1.4, 2.6];
+  const RESOLVE_PAUSE = 0.35;  // brief pause after a successful fill
+  const CRASH_PAUSE = 0.9;     // brief pause after a tailgater hit
+
+  const LANE_CHANGE_TIME = 0.16; // seconds to glide between lanes
+
+  const BEST_KEY = "hameysHighwayBest";
 
   // ---------- State ----------
   let dpr = Math.max(1, window.devicePixelRatio || 1);
   let cssW = 0, cssH = 0;
-  let road = null; // computed geometry
+  let road = null;
+  let laneXs = [];
 
-  let state = "idle"; // idle | playing | won | lost
-  let timeLeft = LEVEL_TIME;
+  let state = "idle"; // idle | playing | gameover
   let score = 0;
-  let fixedCount = 0;
-  let potholesSpawned = 0;
-  let casualties = 0;
+  let best = Number(localStorage.getItem(BEST_KEY) || 0);
+  let lives = LIVES_START;
+  let distance = 0;
+  let potholesFixed = 0;
+  let perfectFills = 0;
 
+  let scrollSpeed = BASE_SPEED;
   let potholes = [];
-  let vehicles = [];
-
+  let ambientVehicles = [];
   let potholeSpawnTimer = 0;
-  let vehicleSpawnTimer = 0;
+  let ambientSpawnTimer = 0;
+
+  let player = null;
+  let tailgater = null;
   let lastTs = 0;
+
+  bestEl.textContent = best;
 
   // ---------- Setup / resize ----------
   function resize() {
@@ -61,8 +83,8 @@
 
     const roadWidth = Math.min(cssW * 0.82, 420);
     const roadLeft = (cssW - roadWidth) / 2;
-    const topMargin = 96; // below HUD
-    const bottomMargin = 40;
+    const topMargin = 90;
+    const bottomMargin = 110;
 
     road = {
       left: roadLeft,
@@ -70,9 +92,17 @@
       width: roadWidth,
       top: topMargin,
       bottom: cssH - bottomMargin,
-      laneUpX: roadLeft + roadWidth * 0.28,   // northbound (moves up screen)
-      laneDownX: roadLeft + roadWidth * 0.72, // southbound (moves down screen)
     };
+
+    laneXs = [];
+    for (let i = 0; i < LANE_COUNT; i++) {
+      laneXs.push(road.left + road.width * ((i + 0.5) / LANE_COUNT));
+    }
+
+    if (player) {
+      player.y = road.bottom - 90;
+      player.x = laneXs[player.lane];
+    }
   }
   window.addEventListener("resize", resize);
   resize();
@@ -81,187 +111,276 @@
   function rand(min, max) {
     return min + Math.random() * (max - min);
   }
-  function choice(arr) {
-    return arr[(Math.random() * arr.length) | 0];
-  }
-  function dist(x1, y1, x2, y2) {
-    return Math.hypot(x1 - x2, y1 - y2);
+  function randInt(min, max) {
+    return Math.floor(rand(min, max + 1));
   }
   function clamp(v, lo, hi) {
     return Math.max(lo, Math.min(hi, v));
   }
+  function lerp(a, b, t) {
+    return a + (b - a) * t;
+  }
+
+  // ---------- Player ----------
+  function makePlayer() {
+    const lane = 1;
+    return {
+      lane,
+      fromX: laneXs[lane],
+      x: laneXs[lane],
+      y: road.bottom - 90,
+      laneT: 1,
+      status: "riding", // riding | stopped | resolving | crashed
+      timer: 0,
+      holding: false,
+      holdProgress: 0,
+      engagedPothole: null,
+      pauseTimer: 0,
+      bob: 0,
+      shake: 0,
+    };
+  }
+
+  function changeLane(dir) {
+    if (!player || state !== "playing") return;
+    if (player.status !== "riding") return;
+    const next = clamp(player.lane + dir, 0, LANE_COUNT - 1);
+    if (next === player.lane) return;
+    player.lane = next;
+    player.fromX = player.x;
+    player.laneT = 0;
+  }
 
   // ---------- Entities ----------
   function spawnPothole() {
-    if (potholesSpawned >= TOTAL_POTHOLES) return;
-    if (potholes.filter(p => p.state !== "fixed").length >= MAX_ACTIVE_POTHOLES) return;
-
-    const lane = Math.random() < 0.5 ? road.laneUpX : road.laneDownX;
-    const jitterX = rand(-road.width * 0.12, road.width * 0.12);
-    const x = clamp(lane + jitterX, road.left + 30, road.right - 30);
-    const y = rand(road.top + 60, road.bottom - 60);
-
+    const lane = randInt(0, LANE_COUNT - 1);
     potholes.push({
-      x, y,
-      radius: POTHOLE_RADIUS,
-      state: "active", // active | repairing | fixed
-      repairProgress: 0,
+      lane,
+      x: laneXs[lane],
+      y: road.top - 40,
+      radius: 24,
+      state: "active", // active | engaged | fixed
       wobble: Math.random() * Math.PI * 2,
     });
-    potholesSpawned++;
   }
 
-  function spawnVehicle() {
-    const goingUp = Math.random() < 0.5;
-    const x = (goingUp ? road.laneUpX : road.laneDownX) + rand(-8, 8);
-    const y = goingUp ? road.bottom + 30 : road.top - 30;
-    const type = Math.random() < 0.55 ? "cat" : "car";
-
-    vehicles.push({
+  function spawnAmbient() {
+    const lane = randInt(0, LANE_COUNT - 1);
+    const type = Math.random() < 0.5 ? "cat" : "car";
+    ambientVehicles.push({
       type,
-      x, y,
-      dir: goingUp ? -1 : 1,
-      speed: rand(70, 110) * (type === "cat" ? 1.15 : 1),
+      lane,
+      x: laneXs[lane],
+      y: road.top - 40,
       state: "alive", // alive | crashing | dead
       crashT: 0,
-      rot: 0,
-      wobblePhase: Math.random() * Math.PI * 2,
+      spinDir: Math.random() < 0.5 ? -1 : 1,
+      speedMul: rand(0.85, 1.05),
     });
   }
 
-  function tryRepair(px, py) {
-    if (state !== "playing") return;
-    // pick the closest active/repairing pothole within tap tolerance
-    let best = null, bestD = Infinity;
-    for (const p of potholes) {
-      if (p.state === "fixed") continue;
-      const d = dist(px, py, p.x, p.y);
-      if (d < p.radius + 18 && d < bestD) {
-        best = p; bestD = d;
-      }
+  function spawnTailgater() {
+    tailgater = {
+      lane: player.lane,
+      x: laneXs[player.lane],
+      y: player.y + 240,
+      startY: player.y + 240,
+    };
+  }
+
+  // ---------- Repair flow ----------
+  function beginRepair(pothole) {
+    player.status = "stopped";
+    player.timer = STOP_TIMER;
+    player.holding = false;
+    player.holdProgress = 0;
+    player.engagedPothole = pothole;
+    pothole.state = "engaged";
+    spawnTailgater();
+    updateRepairBtn();
+  }
+
+  function resolveRepair(outcome) {
+    const p = player.engagedPothole;
+    if (p) p.state = "fixed";
+    potholesFixed++;
+
+    let label = "";
+    if (outcome === "perfect") {
+      score += 100;
+      perfectFills++;
+      label = "PERFECT!";
+      if (navigator.vibrate) navigator.vibrate(30);
+    } else if (outcome === "bumpy") {
+      score += 30;
+      label = "Bumpy fill";
+    } else {
+      score += 10;
+      label = "Overfilled...";
     }
-    if (best && best.state === "active") {
-      best.state = "repairing";
-      best.repairProgress = 0.001;
+    showFeedback(label, outcome);
+
+    player.status = "resolving";
+    player.pauseTimer = RESOLVE_PAUSE;
+    player.engagedPothole = null;
+    player.holding = false;
+    tailgater = null;
+    updateRepairBtn();
+    updateHud();
+  }
+
+  function failRepair() {
+    lives--;
+    player.status = "crashed";
+    player.pauseTimer = CRASH_PAUSE;
+    player.shake = 1;
+    if (player.engagedPothole) player.engagedPothole.state = "fixed"; // hole gets paved over by the pile-up, but unrepaired
+    player.engagedPothole = null;
+    player.holding = false;
+    tailgater = null;
+    showFeedback("CRASH!", "crash");
+    updateRepairBtn();
+    updateHud();
+
+    if (lives <= 0) {
+      endGame();
     }
   }
 
-  function crashVehicle(v) {
-    if (v.state !== "alive") return;
-    v.state = "crashing";
-    v.crashT = 0;
-    v.spinDir = Math.random() < 0.5 ? -1 : 1;
-    v.flyX = rand(-60, 60);
-    casualties++;
-    score = Math.max(0, score - 5);
-    updateHud();
+  function showFeedback(text, cls) {
+    feedbackEl.textContent = text;
+    feedbackEl.className = cls;
+    // force reflow so re-triggering the same class restarts animation
+    void feedbackEl.offsetWidth;
+    feedbackEl.classList.remove("hidden");
+    clearTimeout(showFeedback._t);
+    showFeedback._t = setTimeout(() => feedbackEl.classList.add("hidden"), 700);
+  }
+
+  function updateRepairBtn() {
+    const ready = state === "playing" && player && player.status === "stopped";
+    repairBtn.classList.toggle("ready", ready);
+    repairBtn.classList.toggle("holding", !!(player && player.holding));
+    repairBtn.textContent = ready ? (player.holding ? "HOLDING" : "HOLD!") : "RIDE";
   }
 
   // ---------- Update ----------
   function update(dt) {
     if (state !== "playing") return;
 
-    timeLeft -= dt;
-    if (timeLeft <= 0) {
-      timeLeft = 0;
-      endGame(fixedCount >= TOTAL_POTHOLES);
-      updateHud();
-      return;
-    }
+    if (player.status === "riding") {
+      distance += scrollSpeed * dt * 0.06; // meters (arbitrary scale)
+      scrollSpeed = clamp(BASE_SPEED + distance * SPEED_RAMP, BASE_SPEED, MAX_SPEED);
+      score += scrollSpeed * dt * 0.02;
 
-    // spawn potholes
-    potholeSpawnTimer -= dt;
-    if (potholeSpawnTimer <= 0) {
-      spawnPothole();
-      potholeSpawnTimer = rand(POTHOLE_SPAWN_INTERVAL[0], POTHOLE_SPAWN_INTERVAL[1]);
-    }
-
-    // spawn vehicles
-    vehicleSpawnTimer -= dt;
-    if (vehicleSpawnTimer <= 0) {
-      spawnVehicle();
-      vehicleSpawnTimer = rand(VEHICLE_SPAWN_INTERVAL[0], VEHICLE_SPAWN_INTERVAL[1]);
-    }
-
-    // update potholes (repair fill)
-    for (const p of potholes) {
-      p.wobble += dt;
-      if (p.state === "repairing") {
-        p.repairProgress += dt / REPAIR_DURATION;
-        if (p.repairProgress >= 1) {
-          p.repairProgress = 1;
-          p.state = "fixed";
-          fixedCount++;
-          score += 10;
-          updateHud();
-        }
+      // lane glide
+      if (player.laneT < 1) {
+        player.laneT = clamp(player.laneT + dt / LANE_CHANGE_TIME, 0, 1);
+        player.x = lerp(player.fromX, laneXs[player.lane], player.laneT);
       }
-    }
+      player.bob += dt;
 
-    // update vehicles
-    for (const v of vehicles) {
-      if (v.state === "alive") {
-        v.y += v.dir * v.speed * dt;
-        v.x += Math.sin(v.wobblePhase + v.y * 0.01) * 6 * dt;
+      // spawn
+      potholeSpawnTimer -= dt;
+      if (potholeSpawnTimer <= 0) {
+        spawnPothole();
+        potholeSpawnTimer = rand(POTHOLE_SPAWN_INTERVAL[0], POTHOLE_SPAWN_INTERVAL[1]);
+      }
+      ambientSpawnTimer -= dt;
+      if (ambientSpawnTimer <= 0) {
+        spawnAmbient();
+        ambientSpawnTimer = rand(AMBIENT_SPAWN_INTERVAL[0], AMBIENT_SPAWN_INTERVAL[1]);
+      }
 
-        // collision with open potholes
-        for (const p of potholes) {
-          if (p.state === "fixed") continue;
-          if (dist(v.x, v.y, p.x, p.y) < p.radius * 0.85 + VEHICLE_HIT_RADIUS * 0.4) {
-            crashVehicle(v);
-            break;
+      // move potholes
+      for (const p of potholes) {
+        p.wobble += dt;
+        if (p.state === "active") p.y += scrollSpeed * dt;
+      }
+
+      // move ambient vehicles + collide with open potholes
+      for (const v of ambientVehicles) {
+        if (v.state === "alive") {
+          v.y += scrollSpeed * dt * v.speedMul;
+          for (const p of potholes) {
+            if (p.state !== "active") continue;
+            if (p.lane !== v.lane) continue;
+            if (Math.abs(v.y - p.y) < 18) {
+              v.state = "crashing";
+              v.crashT = 0;
+              break;
+            }
           }
+        } else if (v.state === "crashing") {
+          v.crashT += dt;
+          v.x += (v.spinDir * 40) * dt;
+          v.y -= 30 * dt;
+          if (v.crashT >= 0.8) v.state = "dead";
         }
-      } else if (v.state === "crashing") {
-        v.crashT += dt;
-        const t = v.crashT / CRASH_DURATION;
-        v.x += v.flyX * dt * 2;
-        v.y += v.dir * -40 * dt; // pop backward/up a bit
-        v.rot += v.spinDir * dt * 14;
-        if (t >= 1) v.state = "dead";
       }
-    }
+      ambientVehicles = ambientVehicles.filter(v => v.state !== "dead" && v.y < road.bottom + 80);
+      potholes = potholes.filter(p => p.state !== "active" || p.y < road.bottom + 60);
 
-    // cleanup offscreen / dead
-    vehicles = vehicles.filter(v => {
-      if (v.state === "dead") return false;
-      if (v.y < road.top - 80 || v.y > road.bottom + 80) return false;
-      return true;
-    });
+      // check auto-brake: pothole reaching player's lane/position
+      for (const p of potholes) {
+        if (p.state !== "active") continue;
+        if (p.lane !== player.lane) continue;
+        if (p.y >= player.y - 6) {
+          beginRepair(p);
+          break;
+        }
+      }
+    } else if (player.status === "stopped") {
+      player.timer -= dt;
+      player.bob += dt;
 
-    // win check (all potholes spawned & fixed)
-    if (potholesSpawned >= TOTAL_POTHOLES && fixedCount >= TOTAL_POTHOLES) {
-      endGame(true);
+      if (player.holding) {
+        player.holdProgress += dt / FILL_TIME;
+        if (player.holdProgress >= GAUGE_CAP) {
+          player.holdProgress = GAUGE_CAP;
+          player.holding = false;
+          resolveRepair("overfill");
+        }
+      }
+
+      if (tailgater) {
+        const t = clamp(1 - player.timer / STOP_TIMER, 0, 1);
+        tailgater.y = lerp(tailgater.startY, player.y + 6, t);
+      }
+
+      if (player.timer <= 0 && player.status === "stopped") {
+        failRepair();
+      }
+    } else if (player.status === "resolving" || player.status === "crashed") {
+      player.pauseTimer -= dt;
+      player.shake = Math.max(0, player.shake - dt * 3);
+      if (player.pauseTimer <= 0) {
+        player.status = "riding";
+        updateRepairBtn();
+      }
     }
 
     updateHud();
   }
 
   function updateHud() {
-    timeLeftEl.textContent = Math.ceil(timeLeft);
-    fixedCountEl.textContent = `${fixedCount}/${TOTAL_POTHOLES}`;
-    scoreEl.textContent = score;
-    casualtiesEl.textContent = casualties;
+    scoreEl.textContent = Math.floor(score);
+    livesEl.textContent = "❤️".repeat(Math.max(0, lives)) + "🖤".repeat(Math.max(0, LIVES_START - lives));
   }
 
   // ---------- Draw ----------
   function draw() {
     ctx.clearRect(0, 0, cssW, cssH);
-
-    // background outside the road
     ctx.fillStyle = "#1c2b17";
     ctx.fillRect(0, 0, cssW, cssH);
-
     if (!road) return;
 
-    // road surface (asphalt)
     const grad = ctx.createLinearGradient(0, road.top, 0, road.bottom);
     grad.addColorStop(0, "#4a4f57");
     grad.addColorStop(1, "#393d44");
     ctx.fillStyle = grad;
     ctx.fillRect(road.left, road.top, road.width, road.bottom - road.top);
 
-    // road edge lines
     ctx.strokeStyle = "#f4f4f4";
     ctx.lineWidth = 4;
     ctx.beginPath();
@@ -271,126 +390,160 @@
     ctx.lineTo(road.right - 4, road.bottom);
     ctx.stroke();
 
-    // lane divider (dashed, center)
-    ctx.strokeStyle = "#ffe066";
+    ctx.strokeStyle = "rgba(255, 224, 102, 0.85)";
     ctx.lineWidth = 3;
-    ctx.setLineDash([22, 18]);
-    ctx.beginPath();
-    ctx.moveTo(road.left + road.width / 2, road.top);
-    ctx.lineTo(road.left + road.width / 2, road.bottom);
-    ctx.stroke();
+    ctx.setLineDash([20, 16]);
+    for (let i = 1; i < LANE_COUNT; i++) {
+      const x = road.left + (road.width * i) / LANE_COUNT;
+      ctx.beginPath();
+      ctx.moveTo(x, road.top);
+      ctx.lineTo(x, road.bottom);
+      ctx.stroke();
+    }
     ctx.setLineDash([]);
 
-    // potholes
-    for (const p of potholes) {
-      drawPothole(p);
-    }
-
-    // vehicles (draw dead-alive order doesn't matter much)
-    for (const v of vehicles) {
-      drawVehicle(v);
-    }
+    for (const p of potholes) drawPothole(p);
+    for (const v of ambientVehicles) drawAmbientVehicle(v);
+    if (tailgater && player && player.status === "stopped") drawTailgater();
+    if (player) drawPlayer();
   }
 
   function drawPothole(p) {
+    const bob = Math.sin(p.wobble * 2) * 1.5;
     if (p.state === "fixed") {
-      // faint patch mark
       ctx.save();
       ctx.globalAlpha = 0.35;
       ctx.fillStyle = "#6b6f76";
       ctx.beginPath();
-      ctx.ellipse(p.x, p.y, p.radius * 0.9, p.radius * 0.65, 0, 0, Math.PI * 2);
+      ctx.ellipse(p.x, p.y + bob, p.radius * 0.9, p.radius * 0.65, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
       return;
     }
-
-    const fillAmt = p.state === "repairing" ? p.repairProgress : 0;
-    const bob = Math.sin(p.wobble * 2) * 1.5;
-
-    // hole shadow/hole shape
     ctx.save();
     ctx.beginPath();
     ctx.ellipse(p.x, p.y + bob, p.radius * 0.95, p.radius * 0.7, 0, 0, Math.PI * 2);
     ctx.fillStyle = "#111214";
     ctx.fill();
-
     ctx.beginPath();
     ctx.ellipse(p.x, p.y + bob, p.radius * 0.78, p.radius * 0.55, 0, 0, Math.PI * 2);
     ctx.fillStyle = "#050506";
     ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y + bob, p.radius * 1.05, p.radius * 0.78, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = p.state === "engaged" ? "rgba(255,255,255,0.6)" : "rgba(255, 212, 59, 0.55)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  }
 
-    // asphalt fill animating in
-    if (fillAmt > 0) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.ellipse(p.x, p.y + bob, p.radius * 0.78, p.radius * 0.55, 0, 0, Math.PI * 2);
-      ctx.clip();
-      ctx.fillStyle = "#7a7f87";
-      const fillH = p.radius * 1.2 * fillAmt;
-      ctx.fillRect(p.x - p.radius, p.y + bob + p.radius * 0.7 - fillH, p.radius * 2, fillH);
-      ctx.restore();
+  function drawAmbientVehicle(v) {
+    ctx.save();
+    let alpha = 1;
+    if (v.state === "crashing") alpha = clamp(1 - v.crashT / 0.8, 0, 1);
+    ctx.globalAlpha = alpha;
+    ctx.translate(v.x, v.y);
+    if (v.state === "crashing") ctx.rotate(v.spinDir * v.crashT * 8);
+    ctx.font = "26px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    if (v.type === "cat") {
+      ctx.fillText("🏍️", 0, 2);
+      ctx.font = "16px sans-serif";
+      ctx.fillText("🐱", 2, -10);
+    } else {
+      ctx.fillText("🚗", 0, 0);
     }
-
-    // warning ring for still-open holes
-    if (p.state === "active") {
-      ctx.beginPath();
-      ctx.ellipse(p.x, p.y + bob, p.radius * 1.05, p.radius * 0.78, 0, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(255, 212, 59, 0.55)";
-      ctx.lineWidth = 2;
-      ctx.stroke();
+    if (v.state === "crashing") {
+      ctx.font = "15px sans-serif";
+      ctx.fillText("💥", 0, -20);
     }
     ctx.restore();
   }
 
-  function drawVehicle(v) {
+  function drawTailgater() {
     ctx.save();
-    let alpha = 1;
-    if (v.state === "crashing") {
-      alpha = clamp(1 - v.crashT / CRASH_DURATION, 0, 1);
-    }
-    ctx.globalAlpha = alpha;
-    ctx.translate(v.x, v.y);
-    const facingFlip = v.dir === -1 ? 1 : -1; // face direction of travel
-    if (v.state === "crashing") {
-      ctx.rotate(v.rot);
-    } else {
-      ctx.rotate(facingFlip * 0.06 * Math.PI);
-    }
-
-    ctx.font = "28px sans-serif";
+    ctx.translate(tailgater.x, tailgater.y);
+    ctx.font = "26px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-
-    if (v.type === "cat") {
-      ctx.fillText("🏍️", 0, 2);
-      ctx.font = "18px sans-serif";
-      ctx.fillText("🐱", 2, -12);
-    } else {
-      ctx.fillText("🚗", 0, 0);
-    }
-
-    if (v.state === "crashing") {
+    ctx.fillText("🚙", 0, 0);
+    const urgency = clamp(1 - player.timer / STOP_TIMER, 0, 1);
+    if (urgency > 0.5) {
+      ctx.globalAlpha = urgency;
       ctx.font = "16px sans-serif";
-      ctx.globalAlpha = alpha;
-      ctx.fillText("💥", 0, -22);
+      ctx.fillText("‼️", 0, -22);
     }
-
     ctx.restore();
+  }
+
+  function drawPlayer() {
+    const shakeX = player.shake > 0 ? Math.sin(player.bob * 60) * player.shake * 5 : 0;
+    ctx.save();
+    ctx.translate(player.x + shakeX, player.y + (player.status === "riding" ? Math.sin(player.bob * 10) * 1.5 : 0));
+    ctx.font = "34px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🏍️", 0, 0);
+    ctx.font = "20px sans-serif";
+    ctx.fillText("🧑‍🔧", -2, -18);
+    ctx.restore();
+
+    // repair gauge ring
+    if (player.status === "stopped") {
+      const frac = clamp(player.holdProgress, 0, GAUGE_CAP) / GAUGE_CAP;
+      const radius = 40;
+      ctx.save();
+      ctx.translate(player.x, player.y);
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = "rgba(255,255,255,0.2)";
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // green zone marker
+      ctx.strokeStyle = "rgba(81, 207, 102, 0.9)";
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, -Math.PI / 2 + (GREEN_START / GAUGE_CAP) * Math.PI * 2, -Math.PI / 2 + (GREEN_END / GAUGE_CAP) * Math.PI * 2);
+      ctx.stroke();
+
+      // progress arc
+      let color = "#ff6b6b";
+      if (frac >= GREEN_START / GAUGE_CAP && frac <= GREEN_END / GAUGE_CAP) color = "#51cf66";
+      else if (frac > GREEN_END / GAUGE_CAP) color = "#ff922b";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
+      ctx.stroke();
+
+      // countdown ring (timer left)
+      const timerFrac = clamp(player.timer / STOP_TIMER, 0, 1);
+      ctx.strokeStyle = "rgba(255,255,255,0.55)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius + 10, -Math.PI / 2, -Math.PI / 2 + timerFrac * Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // ---------- Game flow ----------
   function resetGame() {
-    timeLeft = LEVEL_TIME;
     score = 0;
-    fixedCount = 0;
-    potholesSpawned = 0;
-    casualties = 0;
+    lives = LIVES_START;
+    distance = 0;
+    potholesFixed = 0;
+    perfectFills = 0;
+    scrollSpeed = BASE_SPEED;
     potholes = [];
-    vehicles = [];
-    potholeSpawnTimer = 0.2;
-    vehicleSpawnTimer = 1;
+    ambientVehicles = [];
+    tailgater = null;
+    potholeSpawnTimer = 0.6;
+    ambientSpawnTimer = 1;
+    player = makePlayer();
     updateHud();
+    updateRepairBtn();
   }
 
   function startGame() {
@@ -400,32 +553,70 @@
     endScreen.classList.add("hidden");
   }
 
-  function endGame(won) {
-    if (state !== "playing") return;
-    state = won ? "won" : "lost";
-    endTitle.textContent = won ? "Highway Cleared!" : "Time's Up!";
-    endSubtitle.textContent = won
-      ? "Every pothole patched. Traffic rides smooth again."
-      : "The highway is still full of holes.";
-    endFixedEl.textContent = `${fixedCount}/${TOTAL_POTHOLES}`;
-    endCasualtiesEl.textContent = casualties;
-    endScoreEl.textContent = score;
+  function endGame() {
+    state = "gameover";
+    if (score > best) {
+      best = Math.floor(score);
+      localStorage.setItem(BEST_KEY, String(best));
+    }
+    bestEl.textContent = best;
+    endTitle.textContent = "Wiped Out";
+    endSubtitle.textContent = "The highway traffic caught up with you.";
+    endDistanceEl.textContent = `${Math.floor(distance)}m`;
+    endFixedEl.textContent = potholesFixed;
+    endPerfectEl.textContent = perfectFills;
+    endScoreEl.textContent = Math.floor(score);
     endScreen.classList.remove("hidden");
+    updateRepairBtn();
   }
 
   // ---------- Input ----------
-  function pointerToCanvas(clientX, clientY) {
-    const rect = canvas.getBoundingClientRect();
-    return { x: clientX - rect.left, y: clientY - rect.top };
-  }
-
-  canvas.addEventListener("pointerdown", (e) => {
-    const { x, y } = pointerToCanvas(e.clientX, e.clientY);
-    tryRepair(x, y);
-  });
-
   startBtn.addEventListener("click", startGame);
   retryBtn.addEventListener("click", startGame);
+
+  leftBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); changeLane(-1); });
+  rightBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); changeLane(1); });
+
+  function pressRepair() {
+    if (state !== "playing" || !player || player.status !== "stopped") return;
+    player.holding = true;
+    updateRepairBtn();
+  }
+  function releaseRepair() {
+    if (state !== "playing" || !player || player.status !== "stopped" || !player.holding) return;
+    player.holding = false;
+    const frac = player.holdProgress;
+    let outcome;
+    if (frac < GREEN_START) outcome = "bumpy";
+    else if (frac <= GREEN_END) outcome = "perfect";
+    else outcome = "overfill";
+    resolveRepair(outcome);
+  }
+
+  repairBtn.addEventListener("pointerdown", (e) => { e.preventDefault(); pressRepair(); });
+  repairBtn.addEventListener("pointerup", (e) => { e.preventDefault(); releaseRepair(); });
+  repairBtn.addEventListener("pointerleave", () => releaseRepair());
+  repairBtn.addEventListener("pointercancel", () => releaseRepair());
+
+  // keyboard support
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") changeLane(-1);
+    else if (e.key === "ArrowRight") changeLane(1);
+    else if (e.code === "Space") { e.preventDefault(); pressRepair(); }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.code === "Space") releaseRepair();
+  });
+
+  // swipe support on canvas
+  let touchStartX = null;
+  canvas.addEventListener("pointerdown", (e) => { touchStartX = e.clientX; });
+  canvas.addEventListener("pointerup", (e) => {
+    if (touchStartX === null) return;
+    const dx = e.clientX - touchStartX;
+    touchStartX = null;
+    if (Math.abs(dx) > 40) changeLane(dx > 0 ? 1 : -1);
+  });
 
   // ---------- Main loop ----------
   function frame(ts) {
