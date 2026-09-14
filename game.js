@@ -520,7 +520,10 @@
   // ---------- Draw ----------
   function draw() {
     ctx.clearRect(0, 0, cssW, cssH);
-    ctx.fillStyle = "#1c2b17";
+    const grassGrad = ctx.createLinearGradient(0, 0, 0, cssH);
+    grassGrad.addColorStop(0, "#4fd15c");
+    grassGrad.addColorStop(1, "#2fae3e");
+    ctx.fillStyle = grassGrad;
     ctx.fillRect(0, 0, cssW, cssH);
     if (!road) return;
 
