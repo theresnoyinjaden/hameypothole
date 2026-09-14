@@ -4,6 +4,11 @@
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d");
 
+  const catBikerImg = new Image();
+  catBikerImg.src = "assets/cat-biker.png";
+  const CAT_BIKER_W = 32;
+  const CAT_BIKER_H = Math.round(CAT_BIKER_W * (catBikerImg.naturalHeight || 337) / (catBikerImg.naturalWidth || 200)) || 54;
+
   const startScreen = document.getElementById("startScreen");
   const instructionsScreen = document.getElementById("instructionsScreen");
   const endScreen = document.getElementById("endScreen");
@@ -615,19 +620,25 @@
     ctx.globalAlpha = alpha;
     ctx.translate(v.x, v.y);
     if (v.state === "crashing") ctx.rotate(v.spinDir * v.crashT * 8);
-    ctx.font = "26px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    if (v.type === "cat") {
-      ctx.fillText("🏍️", 0, 2);
-      ctx.font = "16px sans-serif";
-      ctx.fillText("🐱", 2, -10);
+    if (v.type === "cat" && catBikerImg.complete && catBikerImg.naturalWidth) {
+      ctx.drawImage(catBikerImg, -CAT_BIKER_W / 2, -CAT_BIKER_H / 2, CAT_BIKER_W, CAT_BIKER_H);
     } else {
-      ctx.fillText("🚗", 0, 0);
+      ctx.font = "26px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      if (v.type === "cat") {
+        ctx.fillText("🏍️", 0, 2);
+        ctx.font = "16px sans-serif";
+        ctx.fillText("🐱", 2, -10);
+      } else {
+        ctx.fillText("🚗", 0, 0);
+      }
     }
     if (v.state === "crashing") {
       ctx.font = "15px sans-serif";
-      ctx.fillText("💥", 0, -20);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("💥", 0, -CAT_BIKER_H / 2);
     }
     ctx.restore();
   }
